@@ -35,7 +35,7 @@ from lerobot.common.datasets.video_utils import VideoFrame, encode_video_frames
 
 
 def check_format(raw_dir) -> bool:
-    zarr_path = raw_dir / "cup_in_the_wild.zarr"
+    zarr_path = raw_dir # / "cup_in_the_wild.zarr"
     zarr_data = zarr.open(zarr_path, mode="r")
 
     required_datasets = {
@@ -60,7 +60,7 @@ def check_format(raw_dir) -> bool:
 
 
 def load_from_raw(raw_dir: Path, videos_dir: Path, fps: int, video: bool, episodes: list[int] | None = None):
-    zarr_path = raw_dir / "cup_in_the_wild.zarr"
+    zarr_path = raw_dir # / "cup_in_the_wild.zarr"
     zarr_data = zarr.open(zarr_path, mode="r")
 
     # We process the image data separately because it is too large to fit in memory
