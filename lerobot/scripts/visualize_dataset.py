@@ -146,6 +146,11 @@ def visualize_dataset(
 
     logging.info("Logging to Rerun")
 
+    ARROW_LENGTH = 0.01
+    origins = []
+    vectors = []
+    colors = []
+    RED = 255
     for batch in tqdm.tqdm(dataloader, total=len(dataloader)):
         # iterate over the batch
         for i in range(len(batch["index"])):
@@ -166,6 +171,15 @@ def visualize_dataset(
             if "observation.state" in batch:
                 for dim_idx, val in enumerate(batch["observation.state"][i]):
                     rr.log(f"state/{dim_idx}", rr.Scalar(val.item()))
+                x, y, z, qx, qy, qz, qw = batch["observation.state"][i]
+                dx = qw * qw + qx * qx - qy * qy  - qz * qz
+                dy = 2 * (qx * qy + qw * qz)
+                dz = 2 * (qz * qx - qw * qy)
+                origins.append([x, y, z])
+                vectors.append([dx*ARROW_LENGTH, dy*ARROW_LENGTH, dz*ARROW_LENGTH])
+                colors.append([RED, 0, RED, 255])
+                RED -= 1
+                rr.log(f"trajectory", rr.Arrows3D(origins=origins, vectors=vectors, colors=colors))
 
             if "next.done" in batch:
                 rr.log("next.done", rr.Scalar(batch["next.done"][i].item()))
