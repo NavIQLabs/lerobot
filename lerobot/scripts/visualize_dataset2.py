@@ -145,13 +145,9 @@ def visualize_dataset(
         rr.serve(open_browser=False, web_port=web_port, ws_port=ws_port)
 
     logging.info("Logging to Rerun")
-
-    ARROW_LENGTH = 0.01
-    origins = []
-    vectors = []
-    colors = []
-    RED = 255
+    trajectory_xyz = []
     for batch in tqdm.tqdm(dataloader, total=len(dataloader)):
+        
         # iterate over the batch
         for i in range(len(batch["index"])):
             rr.set_time_sequence("frame_index", batch["frame_index"][i].item())
@@ -159,28 +155,35 @@ def visualize_dataset(
 
             # display each camera image
             for key in dataset.camera_keys:
-                # TODO(rcadene): add `.compress()`? is it lossless?
+                # print("key", type(key), "\n\n")
+                # TO-DO(rcadene): add `.compress()`? is it lossless?
                 rr.log(key, rr.Image(to_hwc_uint8_numpy(batch[key][i])))
 
             # display each dimension of action space (e.g. actuators command)
             if "action" in batch:
+                print("Actions exist in batch")
                 for dim_idx, val in enumerate(batch["action"][i]):
                     rr.log(f"action/{dim_idx}", rr.Scalar(val.item()))
+                    print("action - ", val.item())
+            else:
+                print("Actions do not exist in batch")
+                    
 
             # display each dimension of observed state space (e.g. agent position in joint space)
             if "observation.state" in batch:
+                xyz_pt = []
                 for dim_idx, val in enumerate(batch["observation.state"][i]):
                     rr.log(f"state/{dim_idx}", rr.Scalar(val.item()))
-                x, y, z, qx, qy, qz, qw = batch["observation.state"][i]
-                dx = qw * qw + qx * qx - qy * qy  - qz * qz
-                dy = 2 * (qx * qy + qw * qz)
-                dz = 2 * (qz * qx - qw * qy)
-                origins.append([x, y, z])
-                vectors.append([dx*ARROW_LENGTH, dy*ARROW_LENGTH, dz*ARROW_LENGTH])
-                colors.append([RED, 0, RED, 255])
-                RED -= 1
-                rr.log(f"trajectory", rr.Arrows3D(origins=origins, vectors=vectors, colors=colors))
-
+                    if dim_idx < 3:
+                        xyz_pt.append(val.item())
+                        
+                trajectory_xyz.append(xyz_pt)
+                # visualize the trajectory with 3D points
+                rr.log("trajectory", rr.Points3D(trajectory_xyz))
+                # rr.log("trajectory_arrow", rr.Arrows3D(trajectory_xyz, [[0.5, 0, 0]], [[0, 255, 0, 255]]))
+                
+                
+                
             if "next.done" in batch:
                 rr.log("next.done", rr.Scalar(batch["next.done"][i].item()))
 
@@ -189,10 +192,9 @@ def visualize_dataset(
 
             if "next.success" in batch:
                 rr.log("next.success", rr.Scalar(batch["next.success"][i].item()))
-            
-            if "gripper_width" in batch:
-                rr.log("gripper_width", rr.Scalar(batch["gripper_width"][i].item()))
-                print("\nGripper w = ", batch["gripper_width"][i].item())
+                
+            # print trajectory
+            # print("XYZ & Quaternion values - ", batch["observation.state"][i])
 
     if mode == "local" and save:
         # save .rrd locally
