@@ -52,17 +52,24 @@ def resolve_delta_timestamps(
             returns `None` if the resulting dict is empty.
     """
     delta_timestamps = {}
-    for key in ds_meta.features:
-        if key == "next.reward" and cfg.reward_delta_indices is not None:
-            delta_timestamps[key] = [i / ds_meta.fps for i in cfg.reward_delta_indices]
-        if key == "action" and cfg.action_delta_indices is not None:
-            delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
-        if key.startswith("observation.") and cfg.observation_delta_indices is not None:
-            delta_timestamps[key] = [i / ds_meta.fps for i in cfg.observation_delta_indices]
+    # for key in ds_meta.features:
+    #     if key == "next.reward" and cfg.reward_delta_indices is not None:
+    #         delta_timestamps[key] = [i / ds_meta.fps for i in cfg.reward_delta_indices]
+    #     if key == "action" and cfg.action_delta_indices is not None:
+    #         delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
+    #     if key.startswith("observation.") and cfg.observation_delta_indices is not None:
+    #         delta_timestamps[key] = [i / ds_meta.fps for i in cfg.observation_delta_indices]
 
-    if len(delta_timestamps) == 0:
-        delta_timestamps = None
+    # if len(delta_timestamps) == 0:
+    #     delta_timestamps = None
 
+    delta_timestamps = {
+        "left_image": [i / ds_meta.fps for i in cfg.observation_delta_indices],
+        "right_image": [i / ds_meta.fps for i in cfg.observation_delta_indices],
+        "middle_image": [i / ds_meta.fps for i in cfg.observation_delta_indices],
+        "state": [i / ds_meta.fps for i in cfg.observation_delta_indices],
+        "actions": [i / ds_meta.fps for i in cfg.action_delta_indices],
+        }
     return delta_timestamps
 
 

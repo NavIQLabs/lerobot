@@ -198,11 +198,36 @@ def train(cfg: TrainPipelineConfig):
     train_tracker = MetricsTracker(
         cfg.batch_size, dataset.num_frames, dataset.num_episodes, train_metrics, initial_step=step
     )
+    def convert_batch_for_diffusion_policy(batch, image_keys=("left_image", "right_image", "middle_image")):
+        # Stack all images into 'observation.images'
+        # Each image key should have shape (B, n_obs_steps, C, H, W) or (B, C, H, W) if n_obs_steps=1
+        img_tensors = [batch[k] for k in image_keys if k in batch]
+        # Ensure all images have shape (B, n_obs_steps, C, H, W)
+        # If not, add sequence dimension as needed
+        for i, img in enumerate(img_tensors):
+            if img.dim() == 4:  # (B, C, H, W)
+                img_tensors[i] = img.unsqueeze(1)  # (B, 1, C, H, W)
+        obs_images = torch.stack(img_tensors, dim=2)  # (B, n_obs_steps, num_cameras, C, H, W)
+        batch["observation.images"] = obs_images
 
+        # Rename state and actions
+        if "state" in batch:
+            batch["observation.state"] = batch.pop("state")
+        if "actions" in batch:
+            batch["action"] = batch.pop("actions")
+        # action_is_pad may not exist, so add dummy if missing
+        if "action_is_pad" not in batch and "action" in batch:
+            B, horizon, *_ = batch["action"].shape
+            
+            batch["action_is_pad"] = torch.zeros((B, horizon), dtype=torch.bool, device=batch["action"].device)
+        print(batch['action'].shape, batch['observation.state'].shape, batch['observation.images'].shape)
+        return batch
+    
     logging.info("Start offline training on a fixed dataset")
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
+        batch = convert_batch_for_diffusion_policy(batch)
         train_tracker.dataloading_s = time.perf_counter() - start_time
 
         for key in batch:
