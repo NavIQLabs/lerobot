@@ -470,6 +470,9 @@ def dataset_to_policy_features(features: dict[str, dict]) -> dict[str, PolicyFea
             type = FeatureType.STATE
         elif key.startswith("action"):
             type = FeatureType.ACTION
+        elif key == 'state':
+            type = FeatureType.STATE
+            
         else:
             continue
 

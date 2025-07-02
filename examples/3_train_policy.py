@@ -31,11 +31,11 @@ from lerobot.configs.types import FeatureType
 
 def main():
     # Create a directory to store the training checkpoint.
-    output_directory = Path("outputs/train/example_pusht_diffusion")
+    output_directory = Path("outputs/train/example_piper")
     output_directory.mkdir(parents=True, exist_ok=True)
 
     # # Select your device
-    device = torch.device("cuda")
+    device = torch.device("mps")
 
     # Number of offline training steps (we'll only do offline training for this example.)
     # Adjust as you prefer. 5000 steps are needed to get something worth evaluating.
@@ -46,11 +46,13 @@ def main():
     # creating the policy:
     #   - input/output shapes: to properly size the policy
     #   - dataset stats: for normalization and denormalization of input/outputs
-    dataset_metadata = LeRobotDatasetMetadata("lerobot/pusht")
-    features = dataset_to_policy_features(dataset_metadata.features)
+    dataset_metadata = LeRobotDatasetMetadata("gauravpradeep/set1_lerobot")
+    features = dataset_to_policy_features(dataset_metadata.features)   
     output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
     input_features = {key: ft for key, ft in features.items() if key not in output_features}
 
+    
+            
     # Policies are initialized with a configuration class, in this case `DiffusionConfig`. For this example,
     # we'll just use the defaults and so no arguments other than input/output features need to be passed.
     cfg = DiffusionConfig(input_features=input_features, output_features=output_features)
@@ -63,26 +65,28 @@ def main():
     # Another policy-dataset interaction is with the delta_timestamps. Each policy expects a given number frames
     # which can differ for inputs, outputs and rewards (if there are some).
     delta_timestamps = {
-        "observation.image": [i / dataset_metadata.fps for i in cfg.observation_delta_indices],
-        "observation.state": [i / dataset_metadata.fps for i in cfg.observation_delta_indices],
-        "action": [i / dataset_metadata.fps for i in cfg.action_delta_indices],
+    "left_image": [i / dataset_metadata.fps for i in cfg.observation_delta_indices],
+    "right_image": [i / dataset_metadata.fps for i in cfg.observation_delta_indices],
+    "middle_image": [i / dataset_metadata.fps for i in cfg.observation_delta_indices],
+    "state": [i / dataset_metadata.fps for i in cfg.observation_delta_indices],
+    "actions": [i / dataset_metadata.fps for i in cfg.action_delta_indices],
     }
 
-    # In this case with the standard configuration for Diffusion Policy, it is equivalent to this:
-    delta_timestamps = {
-        # Load the previous image and state at -0.1 seconds before current frame,
-        # then load current image and state corresponding to 0.0 second.
-        "observation.image": [-0.1, 0.0],
-        "observation.state": [-0.1, 0.0],
-        # Load the previous action (-0.1), the next action to be executed (0.0),
-        # and 14 future actions with a 0.1 seconds spacing. All these actions will be
-        # used to supervise the policy.
-        "action": [-0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4],
-    }
+    # # In this case with the standard configuration for Diffusion Policy, it is equivalent to this:
+    # delta_timestamps = {
+    #     # Load the previous image and state at -0.1 seconds before current frame,
+    #     # then load current image and state corresponding to 0.0 second.
+    #     "observation.image": [-0.1, 0.0],
+    #     "observation.state": [-0.1, 0.0],
+    #     # Load the previous action (-0.1), the next action to be executed (0.0),
+    #     # and 14 future actions with a 0.1 seconds spacing. All these actions will be
+    #     # used to supervise the policy.
+    #     "action": [-0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4],
+    # }
 
     # We can then instantiate the dataset with these delta_timestamps configuration.
-    dataset = LeRobotDataset("lerobot/pusht", delta_timestamps=delta_timestamps)
-
+    dataset = LeRobotDataset("gauravpradeep/set1_lerobot", delta_timestamps=delta_timestamps)
+    # print(dataset)
     # Then we create our optimizer and dataloader for offline training.
     optimizer = torch.optim.Adam(policy.parameters(), lr=1e-4)
     dataloader = torch.utils.data.DataLoader(
@@ -93,12 +97,36 @@ def main():
         pin_memory=device.type != "cpu",
         drop_last=True,
     )
+    def convert_batch_for_diffusion_policy(batch, image_keys=("left_image", "right_image", "middle_image")):
+        # Stack all images into 'observation.images'
+        # Each image key should have shape (B, n_obs_steps, C, H, W) or (B, C, H, W) if n_obs_steps=1
+        img_tensors = [batch[k] for k in image_keys if k in batch]
+        # Ensure all images have shape (B, n_obs_steps, C, H, W)
+        # If not, add sequence dimension as needed
+        for i, img in enumerate(img_tensors):
+            if img.dim() == 4:  # (B, C, H, W)
+                img_tensors[i] = img.unsqueeze(1)  # (B, 1, C, H, W)
+        obs_images = torch.stack(img_tensors, dim=2)  # (B, n_obs_steps, num_cameras, C, H, W)
+        batch["observation.images"] = obs_images
 
+        # Rename state and actions
+        if "state" in batch:
+            batch["observation.state"] = batch.pop("state")
+        if "actions" in batch:
+            batch["action"] = batch.pop("actions")
+        # action_is_pad may not exist, so add dummy if missing
+        if "action_is_pad" not in batch and "action" in batch:
+            B, horizon, *_ = batch["action"].shape
+            batch["action_is_pad"] = torch.zeros((B, horizon), dtype=torch.bool, device=batch["action"].device)
+        return batch
+    
+    
     # Run training loop.
     step = 0
     done = False
     while not done:
         for batch in dataloader:
+            batch = convert_batch_for_diffusion_policy(batch)
             batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
             loss, _ = policy.forward(batch)
             loss.backward()
