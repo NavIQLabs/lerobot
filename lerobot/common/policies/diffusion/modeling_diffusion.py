@@ -145,7 +145,7 @@ class DiffusionPolicy(PreTrainedPolicy):
             self._queues[ACTION].extend(actions.transpose(0, 1))
 
         action = self._queues[ACTION].popleft()
-        return action
+        return action, actions
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, None]:
         """Run the batch through the model and compute the loss for training or validation."""
@@ -289,6 +289,8 @@ class DiffusionModel(nn.Module):
         """
         batch_size, n_obs_steps = batch["observation.state"].shape[:2]
         assert n_obs_steps == self.config.n_obs_steps
+        print(batch['observation.images'].shape)
+        print(batch['observation.state'].shape)
 
         # Encode image features and concatenate them all together along with the state vector.
         global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
