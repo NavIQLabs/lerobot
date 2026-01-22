@@ -24,6 +24,7 @@ from pprint import pformat
 from types import SimpleNamespace
 from typing import Any
 
+import av
 import datasets
 import jsonlines
 import numpy as np
@@ -769,7 +770,7 @@ def validate_features_presence(actual_features: set[str], expected_features: set
     return error_message
 
 
-def validate_feature_dtype_and_shape(name: str, feature: dict, value: np.ndarray | PILImage.Image | str):
+def validate_feature_dtype_and_shape(name: str, feature: dict, value: np.ndarray | PILImage.Image | av.VideoFrame | str):
     expected_dtype = feature["dtype"]
     expected_shape = feature["shape"]
     if is_valid_numpy_dtype_string(expected_dtype):
@@ -810,6 +811,8 @@ def validate_feature_image_or_video(name: str, expected_shape: list[str], value:
         if len(actual_shape) != 3 or (actual_shape != (c, h, w) and actual_shape != (h, w, c)):
             error_message += f"The feature '{name}' of shape '{actual_shape}' does not have the expected shape '{(c, h, w)}' or '{(h, w, c)}'.\n"
     elif isinstance(value, PILImage.Image):
+        pass
+    elif isinstance(value, av.VideoFrame):
         pass
     else:
         error_message += f"The feature '{name}' is expected to be of type 'PIL.Image' or 'np.ndarray' channel first or channel last, but type '{type(value)}' provided instead.\n"
