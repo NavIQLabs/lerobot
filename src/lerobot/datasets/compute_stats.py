@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import time 
 import numpy as np
 
 from lerobot.datasets.utils import load_image_as_numpy
@@ -72,23 +73,59 @@ def sample_images(image_paths: list[str]) -> np.ndarray:
     return images
 
 
-def get_feature_stats(array: np.ndarray, axis: tuple, keepdims: bool) -> dict[str, np.ndarray]:
+def get_feature_stats(array: np.ndarray, axis, keepdims: bool, image: bool = False) -> dict[str, np.ndarray]:
+    # Normalize axis to tuple
+    if isinstance(axis, int):
+        axis = (axis,)
+
+    array = array.astype(np.float32, copy=False)
+
+    count = np.prod([array.shape[a] for a in axis], dtype=np.int64)
+
+    if image:
+        min_ = np.array([[[[0]], [[0]], [[0]]]])
+        max_ = np.array([[[[255]], [[255]], [[255]]]])
+        mean = np.array([[[[125]], [[125]], [[125]]]])
+        std = np.array([[[[25]], [[25]], [[25]]]])
+    else:
+        min_ = np.min(array, axis=axis, keepdims=keepdims)
+        max_ = np.max(array, axis=axis, keepdims=keepdims)
+
+        sum_ = np.sum(array, axis=axis, keepdims=keepdims)
+        sumsq = np.sum(array * array, axis=axis, keepdims=keepdims)
+
+        mean = sum_ / count
+        var = (sumsq / count) - mean * mean
+        std = np.sqrt(np.maximum(var, 0.0))
+
     return {
-        "min": np.min(array, axis=axis, keepdims=keepdims),
-        "max": np.max(array, axis=axis, keepdims=keepdims),
-        "mean": np.mean(array, axis=axis, keepdims=keepdims),
-        "std": np.std(array, axis=axis, keepdims=keepdims),
-        "count": np.array([len(array)]),
+        "min": min_,
+        "max": max_,
+        "mean": mean,
+        "std": std,
+        "count": np.array([array.shape[0]]),
     }
 
+# def get_feature_stats(array: np.ndarray, axis: tuple, keepdims: bool) -> dict[str, np.ndarray]:
+#     return {
+#         "min": np.min(array, axis=axis, keepdims=keepdims),
+#         "max": np.max(array, axis=axis, keepdims=keepdims),
+#         "mean": np.mean(array, axis=axis, keepdims=keepdims),
+#         "std": np.std(array, axis=axis, keepdims=keepdims),
+#         "count": np.array([len(array)]),
+#     }
+# 
 
 def compute_episode_stats(episode_data: dict[str, list[str] | np.ndarray], features: dict) -> dict:
+    gt0 = time.time()
+    print(f"compute start at {gt0}")
     ep_stats = {}
     for key, data in episode_data.items():
         if features[key]["dtype"] == "string":
             continue  # HACK: we should receive np.arrays of strings
         elif features[key]["dtype"] in ["image", "video"]:
-            ep_ft_array = sample_images(data)  # data is a list of image paths
+            ep_ft_array = np.stack(data) # sample_images(data)  # data is a list of image paths
+            ep_ft_array = ep_ft_array.transpose(0, 3, 1, 2)
             axes_to_reduce = (0, 2, 3)  # keep channel dim
             keepdims = True
         else:
@@ -96,13 +133,21 @@ def compute_episode_stats(episode_data: dict[str, list[str] | np.ndarray], featu
             axes_to_reduce = 0  # compute stats over the first axis
             keepdims = data.ndim == 1  # keep as np.array
 
-        ep_stats[key] = get_feature_stats(ep_ft_array, axis=axes_to_reduce, keepdims=keepdims)
+        t0 = time.time()
 
         # finally, we normalize and remove batch dim for images
         if features[key]["dtype"] in ["image", "video"]:
+            ep_stats[key] = get_feature_stats(ep_ft_array, axis=axes_to_reduce, keepdims=keepdims, image=True)
             ep_stats[key] = {
                 k: v if k == "count" else np.squeeze(v / 255.0, axis=0) for k, v in ep_stats[key].items()
             }
+        else:
+            ep_stats[key] = get_feature_stats(ep_ft_array, axis=axes_to_reduce, keepdims=keepdims)
+        t = time.time()
+        print(f"single = {t-t0}s = {(t-t0)*1e3}ms")
+
+    gt = time.time()
+    print(f"compute end in {gt - gt0}s = {(gt - gt0)*1e3}ms")
 
     return ep_stats
 
@@ -150,7 +195,6 @@ def aggregate_feature_stats(stats_ft_list: list[dict[str, dict]]) -> dict[str, d
         "std": np.sqrt(total_variance),
         "count": total_count,
     }
-
 
 def aggregate_stats(stats_list: list[dict[str, dict]]) -> dict[str, dict[str, np.ndarray]]:
     """Aggregate stats from multiple compute_stats outputs into a single set of stats.

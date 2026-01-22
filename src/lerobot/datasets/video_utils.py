@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from fractions import Fraction
+import numpy as np
 import av
 import pyarrow as pa
 import torch
@@ -242,6 +244,82 @@ def decode_video_frames_torchcodec(
     assert len(timestamps) == len(closest_frames)
     return closest_frames
 
+def encode_video_frames_from_ndarray(
+    images: list[np.ndarray],
+    video_path: Path | str,
+    fps: int,
+    vcodec: str = "libsvtav1",
+    pix_fmt: str = "yuv420p",
+    g: int | None = 2,
+    crf: int | None = 30,
+    fast_decode: int = 0,
+    log_level: int | None = av.logging.ERROR,
+    overwrite: bool = False,
+) -> None:
+    """More info on ffmpeg arguments tuning on `benchmark/video/README.md`"""
+    # Check encoder availability
+    if vcodec not in ["h264", "hevc", "libsvtav1"]:
+        raise ValueError(f"Unsupported video codec: {vcodec}. Supported codecs are: h264, hevc, libsvtav1.")
+
+    video_path = Path(video_path)
+    video_path.parent.mkdir(parents=True, exist_ok=overwrite)
+
+    # Encoders/pixel formats incompatibility check
+    if (vcodec == "libsvtav1" or vcodec == "hevc") and pix_fmt == "yuv444p":
+        logging.warning(
+            f"Incompatible pixel format 'yuv444p' for codec {vcodec}, auto-selecting format 'yuv420p'"
+        )
+        pix_fmt = "yuv420p"
+
+    # Define video output frame size (assuming all input frames are the same size)
+    dummy_image = images[0] 
+    height, width, channels = dummy_image.shape
+
+    # Define video codec options
+    video_options = {}
+
+    if g is not None:
+        video_options["g"] = str(g)
+
+    if crf is not None:
+        video_options["crf"] = str(crf)
+
+    if fast_decode:
+        key = "svtav1-params" if vcodec == "libsvtav1" else "tune"
+        value = f"fast-decode={fast_decode}" if vcodec == "libsvtav1" else "fastdecode"
+        video_options[key] = value
+
+    # Set logging level
+    if log_level is not None:
+        # "While less efficient, it is generally preferable to modify logging with Python’s logging"
+        logging.getLogger("libav").setLevel(log_level)
+
+    # Create and open output file (overwrite by default)
+    with av.open(str(video_path), "w") as output:
+        frame_rate = Fraction(fps)
+        output_stream = output.add_stream(vcodec, frame_rate, options=video_options)
+        output_stream.pix_fmt = pix_fmt
+        output_stream.width = width
+        output_stream.height = height
+
+        # Loop through input frames and encode them
+        for np_image in images:
+            input_frame = av.VideoFrame.from_ndarray(np_image)
+            packet = output_stream.encode(input_frame)
+            if packet:
+                output.mux(packet)
+
+        # Flush the encoder
+        packet = output_stream.encode()
+        if packet:
+            output.mux(packet)
+
+    # Reset logging level
+    if log_level is not None:
+        av.logging.restore_default_callback()
+
+    if not video_path.exists():
+        raise OSError(f"Video encoding did not work. File not found: {video_path}.")
 
 def encode_video_frames(
     imgs_dir: Path | str,

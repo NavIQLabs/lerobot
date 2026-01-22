@@ -18,6 +18,7 @@ import logging
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+import threading
 
 import datasets
 import numpy as np
@@ -69,6 +70,7 @@ from lerobot.datasets.video_utils import (
     VideoFrame,
     decode_video_frames,
     encode_video_frames,
+    encode_video_frames_from_ndarray,
     get_safe_default_codec,
     get_video_info,
 )
@@ -800,7 +802,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         self.episode_buffer["size"] += 1
 
-    def save_episode(self, episode_buffer: dict | None = None) -> None:
+    def save_episode(self, episode_data: dict | None = None) -> None:
         """
         This will save to disk the current episode in self.episode_buffer.
 
@@ -813,7 +815,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 save the current episode in self.episode_buffer, which is filled with 'add_frame'. Defaults to
                 None.
         """
-        if not episode_buffer:
+        if not episode_data:
             episode_buffer = self.episode_buffer
 
         validate_episode_buffer(episode_buffer, self.meta.total_episodes, self.features)
@@ -851,7 +853,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         use_batched_encoding = self.batch_encoding_size > 1
 
         if has_video_keys and not use_batched_encoding:
-            self.encode_episode_videos(episode_index)
+            self.encode_episode_videos(episode_index, episode_buffer)
 
         # `meta.save_episode` should be executed after encoding the videos
         self.meta.save_episode(episode_index, episode_length, episode_tasks, ep_stats)
@@ -940,7 +942,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         if self.image_writer is not None:
             self.image_writer.wait_until_done()
 
-    def encode_episode_videos(self, episode_index: int) -> None:
+    def encode_episode_videos(self, episode_index: int, buffer: dict = {}) -> None:
         """
         Use ffmpeg to convert frames stored as png into mp4 videos.
         Note: `encode_video_frames` is a blocking call. Making it asynchronous shouldn't speedup encoding,
@@ -954,16 +956,29 @@ class LeRobotDataset(torch.utils.data.Dataset):
         Args:
             episode_index (int): Index of the episode to encode.
         """
-        for key in self.meta.video_keys:
+
+        def encode_one(self, key):
             video_path = self.root / self.meta.get_video_file_path(episode_index, key)
             if video_path.is_file():
                 # Skip if video is already encoded. Could be the case when resuming data recording.
-                continue
-            img_dir = self._get_image_file_path(
-                episode_index=episode_index, image_key=key, frame_index=0
-            ).parent
-            encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
-            shutil.rmtree(img_dir)
+                return
+            if buffer:
+                encode_video_frames_from_ndarray(buffer[key], video_path, self.fps, overwrite=True)
+            else:
+                img_dir = self._get_image_file_path(
+                    episode_index=episode_index, image_key=key, frame_index=0
+                ).parent
+                encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
+                shutil.rmtree(img_dir)
+
+        threads = []
+        for key in self.meta.video_keys:
+            th = threading.Thread(target=encode_one, args=(self, key))
+            th.start()
+            threads.append(th)
+
+        for th in threads:
+            th.join()
 
         # Update video info (only needed when first episode is encoded since it reads from episode 0)
         if len(self.meta.video_keys) > 0 and episode_index == 0:
