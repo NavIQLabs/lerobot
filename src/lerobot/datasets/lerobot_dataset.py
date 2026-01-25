@@ -313,7 +313,7 @@ class LeRobotDatasetMetadata:
         obj.repo_id = repo_id
         obj.root = Path(root) if root is not None else HF_LEROBOT_HOME / repo_id
 
-        obj.root.mkdir(parents=True, exist_ok=False)
+        obj.root.mkdir(parents=True, exist_ok=True)
 
         # TODO(aliberts, rcadene): implement sanity check for features
         features = {**features, **DEFAULT_FEATURES}
@@ -768,7 +768,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         else:
             self.image_writer.save_image(image=image, fpath=fpath)
 
-    def add_frame(self, frame: dict, task: str, timestamp: float | None = None) -> None:
+    def add_frame(self, frame: dict, task: str, timestamp: float | None = None, episode_index: int | None = None) -> None:
         """
         This function only adds the frame to the episode_buffer. Apart from images — which are written in a
         temporary directory — nothing is written to disk. To save those frames, the 'save_episode()' method
@@ -1011,6 +1011,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         repo_id: str,
         fps: int,
         features: dict,
+        meta: LeRobotDatasetMetadata|None = None,
         root: str | Path | None = None,
         robot_type: str | None = None,
         use_videos: bool = True,
@@ -1022,14 +1023,17 @@ class LeRobotDataset(torch.utils.data.Dataset):
     ) -> "LeRobotDataset":
         """Create a LeRobot Dataset from scratch in order to record data."""
         obj = cls.__new__(cls)
-        obj.meta = LeRobotDatasetMetadata.create(
-            repo_id=repo_id,
-            fps=fps,
-            robot_type=robot_type,
-            features=features,
-            root=root,
-            use_videos=use_videos,
-        )
+        if meta is None:
+            obj.meta = LeRobotDatasetMetadata.create(
+                repo_id=repo_id,
+                fps=fps,
+                robot_type=robot_type,
+                features=features,
+                root=root,
+                use_videos=use_videos,
+            )
+        else:
+            obj.meta = meta
         obj.repo_id = obj.meta.repo_id
         obj.root = obj.meta.root
         obj.revision = None
@@ -1042,7 +1046,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             obj.start_image_writer(image_writer_processes, image_writer_threads)
 
         # TODO(aliberts, rcadene, alexander-soare): Merge this with OnlineBuffer/DataBuffer
-        obj.episode_buffer = obj.create_episode_buffer()
+        obj.episode_buffer = obj.create_episode_buffer(obj.meta.total_episodes)
 
         obj.episodes = None
         obj.hf_dataset = obj.create_hf_dataset()
