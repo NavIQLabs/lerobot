@@ -15,7 +15,9 @@
 # limitations under the License.
 import contextlib
 import logging
+import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable
 from pathlib import Path
 
@@ -486,8 +488,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.episode_data_index = get_episode_data_index(self.meta.episodes, self.episodes)
 
         # Check timestamps
-        timestamps = torch.stack(self.hf_dataset["timestamp"]).numpy()
-        episode_indices = torch.stack(self.hf_dataset["episode_index"]).numpy()
+        timestamps = self._column_to_tensor(self.hf_dataset["timestamp"], dtype=torch.float32).numpy()
+        episode_indices = self._column_to_tensor(self.hf_dataset["episode_index"], dtype=torch.int64).numpy()
         ep_data_index_np = {k: t.numpy() for k, t in self.episode_data_index.items()}
         check_timestamps_sync(timestamps, episode_indices, ep_data_index_np, self.fps, self.tolerance_s)
 
@@ -495,6 +497,20 @@ class LeRobotDataset(torch.utils.data.Dataset):
         if self.delta_timestamps is not None:
             check_delta_timestamps(self.delta_timestamps, self.fps, self.tolerance_s)
             self.delta_indices = get_delta_indices(self.delta_timestamps, self.fps)
+
+    @staticmethod
+    def _column_to_tensor(column, *, dtype: torch.dtype | None = None) -> torch.Tensor:
+        values = list(column)
+        if not values:
+            return torch.empty(0, dtype=dtype if dtype is not None else torch.float32)
+        first = values[0]
+        if isinstance(first, torch.Tensor):
+            tensor = torch.stack([item.detach().cpu() for item in values])
+        else:
+            tensor = torch.as_tensor(values)
+        if dtype is not None and tensor.dtype != dtype:
+            tensor = tensor.to(dtype)
+        return tensor
 
     def push_to_hub(
         self,
@@ -972,7 +988,16 @@ class LeRobotDataset(torch.utils.data.Dataset):
             img_dir = self._get_image_file_path(
                 episode_index=episode_index, image_key=key, frame_index=0
             ).parent
-            encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
+            encode_video_frames(
+                img_dir,
+                video_path,
+                self.fps,
+                vcodec=os.environ.get("LEROBOT_VIDEO_CODEC", "libsvtav1"),
+                g=int(os.environ.get("LEROBOT_VIDEO_GOP", "2")),
+                crf=int(os.environ.get("LEROBOT_VIDEO_CRF", "30")),
+                fast_decode=int(os.environ.get("LEROBOT_VIDEO_FAST_DECODE", "0")),
+                overwrite=True,
+            )
             shutil.rmtree(img_dir)
 
         # Update video info (only needed when first episode is encoded since it reads from episode 0)
@@ -992,11 +1017,25 @@ class LeRobotDataset(torch.utils.data.Dataset):
             end_episode = self.meta.total_episodes
 
         logging.info(f"Starting batch video encoding for episodes {start_episode} to {end_episode - 1}")
+        worker_count = max(1, int(os.environ.get("LEROBOT_VIDEO_ENCODING_WORKERS", "1")))
 
-        # Encode all episodes with cleanup enabled for individual episodes
-        for ep_idx in range(start_episode, end_episode):
-            logging.info(f"Encoding videos for episode {ep_idx}")
-            self.encode_episode_videos(ep_idx)
+        if worker_count == 1:
+            for ep_idx in range(start_episode, end_episode):
+                logging.info(f"Encoding videos for episode {ep_idx}")
+                self.encode_episode_videos(ep_idx)
+        else:
+            logging.info(
+                f"Encoding videos for episodes {start_episode} to {end_episode - 1} with {worker_count} workers"
+            )
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = {
+                    executor.submit(self.encode_episode_videos, ep_idx): ep_idx
+                    for ep_idx in range(start_episode, end_episode)
+                }
+                for future in as_completed(futures):
+                    ep_idx = futures[future]
+                    future.result()
+                    logging.info(f"Finished encoding videos for episode {ep_idx}")
 
         logging.info("Batch video encoding completed")
 
