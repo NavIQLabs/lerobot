@@ -17,7 +17,7 @@ import contextlib
 import logging
 import os
 import shutil
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections.abc import Callable
 from pathlib import Path
 
@@ -76,6 +76,36 @@ from lerobot.datasets.video_utils import (
 )
 
 CODEBASE_VERSION = "v2.1"
+
+
+def _get_video_encoding_options() -> dict[str, int | str]:
+    return {
+        "vcodec": os.environ.get("LEROBOT_VIDEO_CODEC", "libsvtav1"),
+        "g": int(os.environ.get("LEROBOT_VIDEO_GOP", "2")),
+        "crf": int(os.environ.get("LEROBOT_VIDEO_CRF", "30")),
+        "fast_decode": int(os.environ.get("LEROBOT_VIDEO_FAST_DECODE", "0")),
+    }
+
+
+def _encode_episode_videos_worker(
+    root: str | Path,
+    episode_index: int,
+    video_keys: list[str],
+    video_paths: dict[str, str | Path],
+    fps: int,
+    encoding_options: dict[str, int | str],
+) -> int:
+    root = Path(root)
+    for key in video_keys:
+        video_path = Path(video_paths[key])
+        if not video_path.is_absolute():
+            video_path = root / video_path
+        if video_path.is_file():
+            continue
+        img_dir = (root / DEFAULT_IMAGE_PATH.format(image_key=key, episode_index=episode_index, frame_index=0)).parent
+        encode_video_frames(img_dir, video_path, fps, **encoding_options, overwrite=True)
+        shutil.rmtree(img_dir)
+    return episode_index
 
 
 class LeRobotDatasetMetadata:
@@ -988,16 +1018,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             img_dir = self._get_image_file_path(
                 episode_index=episode_index, image_key=key, frame_index=0
             ).parent
-            encode_video_frames(
-                img_dir,
-                video_path,
-                self.fps,
-                vcodec=os.environ.get("LEROBOT_VIDEO_CODEC", "libsvtav1"),
-                g=int(os.environ.get("LEROBOT_VIDEO_GOP", "2")),
-                crf=int(os.environ.get("LEROBOT_VIDEO_CRF", "30")),
-                fast_decode=int(os.environ.get("LEROBOT_VIDEO_FAST_DECODE", "0")),
-                overwrite=True,
-            )
+            encode_video_frames(img_dir, video_path, self.fps, **_get_video_encoding_options(), overwrite=True)
             shutil.rmtree(img_dir)
 
         # Update video info (only needed when first episode is encoded since it reads from episode 0)
@@ -1018,6 +1039,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         logging.info(f"Starting batch video encoding for episodes {start_episode} to {end_episode - 1}")
         worker_count = max(1, int(os.environ.get("LEROBOT_VIDEO_ENCODING_WORKERS", "1")))
+        encoding_options = _get_video_encoding_options()
 
         if worker_count == 1:
             for ep_idx in range(start_episode, end_episode):
@@ -1027,14 +1049,29 @@ class LeRobotDataset(torch.utils.data.Dataset):
             logging.info(
                 f"Encoding videos for episodes {start_episode} to {end_episode - 1} with {worker_count} workers"
             )
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
                 futures = {
-                    executor.submit(self.encode_episode_videos, ep_idx): ep_idx
+                    # Resolve paths in the parent so the worker only needs plain data.
+                    executor.submit(
+                        _encode_episode_videos_worker,
+                        self.root,
+                        ep_idx,
+                        list(self.meta.video_keys),
+                        {
+                            key: self.meta.get_video_file_path(ep_idx, key)
+                            for key in self.meta.video_keys
+                        },
+                        self.fps,
+                        encoding_options,
+                    ): ep_idx
                     for ep_idx in range(start_episode, end_episode)
                 }
                 for future in as_completed(futures):
                     ep_idx = futures[future]
                     future.result()
+                    if ep_idx == 0 and len(self.meta.video_keys) > 0:
+                        self.meta.update_video_info()
+                        write_info(self.meta.info, self.meta.root)
                     logging.info(f"Finished encoding videos for episode {ep_idx}")
 
         logging.info("Batch video encoding completed")

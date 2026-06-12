@@ -35,6 +35,8 @@ from lerobot.datasets.image_writer import image_array_to_pil_image
 from lerobot.datasets.lerobot_dataset import (
     LeRobotDataset,
     MultiLeRobotDataset,
+    _encode_episode_videos_worker,
+    _get_video_encoding_options,
 )
 from lerobot.datasets.utils import (
     create_branch,
@@ -97,6 +99,56 @@ def test_dataset_initialization(tmp_path, lerobot_dataset_factory):
     assert dataset.episodes == kwargs["episodes"]
     assert dataset.num_episodes == len(kwargs["episodes"])
     assert dataset.num_frames == len(dataset)
+
+
+def test_get_video_encoding_options_reads_env(monkeypatch):
+    monkeypatch.setenv("LEROBOT_VIDEO_CODEC", "h264")
+    monkeypatch.setenv("LEROBOT_VIDEO_GOP", "12")
+    monkeypatch.setenv("LEROBOT_VIDEO_CRF", "18")
+    monkeypatch.setenv("LEROBOT_VIDEO_FAST_DECODE", "1")
+
+    assert _get_video_encoding_options() == {
+        "vcodec": "h264",
+        "g": 12,
+        "crf": 18,
+        "fast_decode": 1,
+    }
+
+
+def test_encode_episode_videos_worker_uses_resolved_paths(tmp_path, monkeypatch):
+    calls = []
+    removed = []
+
+    (tmp_path / "images/cam0/episode_000003").mkdir(parents=True)
+
+    def fake_encode_video_frames(img_dir, video_path, fps, **kwargs):
+        calls.append((Path(img_dir), Path(video_path), fps, kwargs))
+
+    def fake_rmtree(path):
+        removed.append(Path(path))
+
+    monkeypatch.setattr("lerobot.datasets.lerobot_dataset.encode_video_frames", fake_encode_video_frames)
+    monkeypatch.setattr("lerobot.datasets.lerobot_dataset.shutil.rmtree", fake_rmtree)
+
+    episode_index = 3
+    _encode_episode_videos_worker(
+        tmp_path,
+        episode_index,
+        ["cam0"],
+        {"cam0": Path("videos/chunk-000/cam0/episode_000003.mp4")},
+        30,
+        {"vcodec": "h264", "g": 2, "crf": 30, "fast_decode": 0},
+    )
+
+    assert calls == [
+        (
+            tmp_path / "images/cam0/episode_000003",
+            tmp_path / "videos/chunk-000/cam0/episode_000003.mp4",
+            30,
+            {"vcodec": "h264", "g": 2, "crf": 30, "fast_decode": 0},
+        )
+    ]
+    assert removed == [tmp_path / "images/cam0/episode_000003"]
 
 
 def test_add_frame_missing_feature(tmp_path, empty_lerobot_dataset_factory):
